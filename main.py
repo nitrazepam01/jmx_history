@@ -108,7 +108,7 @@ questions_data = load_and_parse_data("courseware.csv")
 # -----------------------------------------------------------------------------
 # 3. 后端服务 (Supabase & AI)
 # -----------------------------------------------------------------------------
-USER_ID = "user_01"
+USER_ID = "user_jmx"
 
 def init_supabase():
     # 增加容错检查，防止未配置 Secrets 报错
@@ -399,3 +399,4 @@ elif st.session_state.view_mode == 'review_mistakes':
             total_wrong_count=len(wrong_indices),
             current_wrong_pos=st.session_state.mistake_pointer
         )
+
