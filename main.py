@@ -48,6 +48,15 @@ st.markdown("""
         margin-bottom: 10px;
         display: inline-block;
     }
+    
+    /* 统计区域样式 */
+    .stat-box {
+        background-color: #f0f2f6;
+        padding: 10px;
+        border-radius: 10px;
+        text-align: center;
+        margin-bottom: 10px;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -99,9 +108,14 @@ questions_data = load_and_parse_data("courseware.csv")
 # -----------------------------------------------------------------------------
 # 3. 后端服务 (Supabase & AI)
 # -----------------------------------------------------------------------------
-USER_ID = "cilent_jmx"
+USER_ID = "user_01"
 
 def init_supabase():
+    # 增加容错检查，防止未配置 Secrets 报错
+    if "SUPABASE_URL" not in st.secrets:
+        st.error("请在 Streamlit Cloud Settings -> Secrets 中配置 SUPABASE_URL")
+        st.stop()
+        
     url = st.secrets["SUPABASE_URL"]
     key = st.secrets["SUPABASE_KEY"]
     return create_client(url, key)
@@ -141,7 +155,6 @@ def log_attempt(q_index, selected_opt, is_correct):
 
 def get_ai_explanation(question, user_choice, correct_choice):
     try:
-        # 支持 DeepSeek 或 OpenAI，取决于你的 Secrets 配置
         api_key = st.secrets.get("DEEPSEEK_API_KEY") or st.secrets["OPENAI_API_KEY"]
         base_url = "https://api.deepseek.com" if "DEEPSEEK_API_KEY" in st.secrets else None
         model_name = "deepseek-chat" if "DEEPSEEK_API_KEY" in st.secrets else "gpt-3.5-turbo"
@@ -153,8 +166,8 @@ def get_ai_explanation(question, user_choice, correct_choice):
         用户选: "{user_choice}"
         正确答案: "{correct_choice}"
         请解释：1. 为什么选错了(常见误区)。2. 为什么正确答案是对的。语气要亲切鼓励。
-               2. 告诉她为什么做错
-               3. 用“你好 姜同学”开头 给她一句简短的鼓励
+               2.告诉用户这里怎么记忆最简单那
+               3.用“你好，姜同学”开头 给她一句简短的鼓励
         """
         
         response = client.chat.completions.create(
@@ -175,7 +188,6 @@ if 'view_mode' not in st.session_state:
     st.session_state.view_mode = 'grid' # 'grid', 'quiz', 'review_mistakes'
 if 'explanation' not in st.session_state:
     st.session_state.explanation = None
-# 新增状态：用于错题复习模式下的指针
 if 'mistake_pointer' not in st.session_state:
     st.session_state.mistake_pointer = 0
 
@@ -190,8 +202,18 @@ if st.session_state.view_mode == 'grid':
     completed = len(status_map)
     correct_count = sum(1 for v in status_map.values() if v)
     
-    # === 新增功能：计算错题列表 ===
-    # 筛选出 status 为 False 的题目索引
+    # === 计算逻辑：寻找“最新进度” ===
+    # 找到第一个没有在 status_map 中出现的 ID
+    next_todo_index = 0
+    for i in range(total_q):
+        if i not in status_map:
+            next_todo_index = i
+            break
+    else:
+        # 如果循环走完没 break，说明全做完了
+        next_todo_index = -1 
+
+    # === 计算逻辑：错题 ===
     wrong_indices = [idx for idx, is_right in status_map.items() if not is_right]
     wrong_indices.sort()
     wrong_count = len(wrong_indices)
@@ -200,19 +222,31 @@ if st.session_state.view_mode == 'grid':
     col1, col2, col3 = st.columns(3)
     col1.metric("已完成", f"{completed}/{total_q}")
     col2.metric("正确率", f"{int(correct_count/completed*100)}%" if completed > 0 else "0%")
-    col3.metric("待复习错题", f"{wrong_count} 题", delta_color="inverse")
+    col3.metric("错题本", f"{wrong_count}", delta_color="inverse")
     
     st.markdown("---")
 
-    # === 错题本入口按钮 ===
-    if wrong_count > 0:
-        if st.button(f"📖 开始复习错题 ({wrong_count}题)", type="primary"):
-            st.session_state.view_mode = 'review_mistakes'
-            st.session_state.mistake_pointer = 0 # 重置错题指针
+    # === 操作区 (Action Bar) ===
+    # 按钮 1: 继续做题 (仅当没做完时显示)
+    if next_todo_index != -1:
+        # 这里使用 Primary 样式，使其最显眼
+        if st.button(f"🚀 继续刷题 (从第 {next_todo_index + 1} 题开始)", type="primary", use_container_width=True):
+            st.session_state.current_q_index = next_todo_index
+            st.session_state.view_mode = 'quiz'
             st.session_state.explanation = None
             st.rerun()
-    elif completed > 0 and wrong_count == 0:
-        st.success("太棒了！当前没有错题！🎉")
+    else:
+        st.success("🎉 哇！你已经刷完所有题目啦！太强了！")
+
+    # 按钮 2: 复习错题 (仅当有错题时显示)
+    if wrong_count > 0:
+        # 增加一点间距
+        st.write("") 
+        if st.button(f"📖 专项复习错题 ({wrong_count}题)", use_container_width=True):
+            st.session_state.view_mode = 'review_mistakes'
+            st.session_state.mistake_pointer = 0
+            st.session_state.explanation = None
+            st.rerun()
 
     st.markdown("### 所有题目")
     
@@ -231,11 +265,10 @@ if st.session_state.view_mode == 'grid':
             if q_idx in status_map:
                 if status_map[q_idx]:
                     btn_label = f"✅ {q_idx + 1}"
-                    # 答对的题在网格里保持低调(灰色)，只把答错的标红
-                    btn_type = "secondary" 
                 else:
                     btn_label = f"❌ {q_idx + 1}"
-                    btn_type = "primary" # 标红/高亮显示错题
+                    # 网格里也把错题高亮一下
+                    btn_type = "primary" 
             
             with cols[idx]:
                 if st.button(btn_label, key=f"grid_btn_{q_idx}", type=btn_type, use_container_width=True):
@@ -245,18 +278,16 @@ if st.session_state.view_mode == 'grid':
                     st.rerun()
 
 # -----------------------------------------------------------------------------
-# 6. 通用答题组件 (封装了普通模式和错题模式的共用逻辑)
+# 6. 通用答题组件
 # -----------------------------------------------------------------------------
 def render_quiz_ui(q_idx, is_review_mode=False, total_wrong_count=0, current_wrong_pos=0):
     q_data = questions_data[q_idx]
     
-    # 顶部导航
     if st.button("⬅️ 返回主页"):
         st.session_state.view_mode = 'grid'
         st.session_state.explanation = None
         st.rerun()
 
-    # 错题模式下的特殊标识
     if is_review_mode:
         st.markdown(f"<div class='mistake-badge'>🔥 错题突击: 第 {current_wrong_pos + 1} / {total_wrong_count} 个</div>", unsafe_allow_html=True)
     
@@ -269,7 +300,6 @@ def render_quiz_ui(q_idx, is_review_mode=False, total_wrong_count=0, current_wro
 
     option_labels = [f"{k}. {v}" for k, v in options.items()]
     
-    # 使用不同的 Key 防止组件状态冲突
     radio_key = f"radio_{q_idx}_review" if is_review_mode else f"radio_{q_idx}"
     
     selected_label = st.radio(
@@ -293,20 +323,14 @@ def render_quiz_ui(q_idx, is_review_mode=False, total_wrong_count=0, current_wro
                     
                     if is_correct:
                         st.balloons()
-                        if is_review_mode:
-                            st.success("✅ 答对了！该题已从错题本移除！")
-                        else:
-                            st.success("✅ 答对了！")
+                        msg = "✅ 答对了！该题已消灭！" if is_review_mode else "✅ 答对了！"
+                        st.success(msg)
                         time.sleep(1.0)
                         
-                        # 逻辑跳转
                         if is_review_mode:
-                            # 错题模式：直接刷新，因为刷新后获取的 wrong_list 会自动少一个
-                            # 我们保持 pointer 不变，因为它会自动指向列表中的“下一位”（原本的下一位前移了）
-                            # 但如果这是最后一个，需要处理
                             st.rerun() 
                         else:
-                            # 普通模式：去下一题
+                            # 普通模式自动下一题
                             if st.session_state.current_q_index < len(questions_data) - 1:
                                 st.session_state.current_q_index += 1
                                 st.rerun()
@@ -316,8 +340,8 @@ def render_quiz_ui(q_idx, is_review_mode=False, total_wrong_count=0, current_wro
                                 st.session_state.view_mode = 'grid'
                                 st.rerun()
                     else:
-                        st.error(f"❌ 我草、用户写错了。正确答案是 {correct_key}。")
-                        with st.spinner("🤖 deepseek老师正在分析..."):
+                        st.error(f"我草、用户做错了。正确答案是 {correct_key}。")
+                        with st.spinner("🤖Deepseek老师正在分析..."):
                             expl = get_ai_explanation(
                                 q_data['question'], 
                                 options.get(user_choice_key, "未知"), 
@@ -336,12 +360,9 @@ def render_quiz_ui(q_idx, is_review_mode=False, total_wrong_count=0, current_wro
                 st.session_state.explanation = None
                 
                 if is_review_mode:
-                    # 错题模式：如果在看解析，说明这道题还是没做对
-                    # 指针 +1，去看下一个错题
                     st.session_state.mistake_pointer += 1
                     st.rerun()
                 else:
-                    # 普通模式
                     if st.session_state.current_q_index < len(questions_data) - 1:
                         st.session_state.current_q_index += 1
                         st.rerun()
@@ -350,25 +371,23 @@ def render_quiz_ui(q_idx, is_review_mode=False, total_wrong_count=0, current_wro
                         st.rerun()
 
 # -----------------------------------------------------------------------------
-# 7. 视图调度：根据模式渲染界面
+# 7. 视图调度
 # -----------------------------------------------------------------------------
 if st.session_state.view_mode == 'quiz':
     render_quiz_ui(st.session_state.current_q_index, is_review_mode=False)
 
 elif st.session_state.view_mode == 'review_mistakes':
-    # 重新获取最新的错题列表
     status_map = get_user_history()
     wrong_indices = [idx for idx, is_right in status_map.items() if not is_right]
     wrong_indices.sort()
     
     if not wrong_indices:
         st.balloons()
-        st.success("🎉 太棒了！错题本已经被你清空了！")
+        st.success("🎉 错题本已清空！")
         if st.button("返回主页"):
             st.session_state.view_mode = 'grid'
             st.rerun()
     else:
-        # 指针安全检查
         if st.session_state.mistake_pointer >= len(wrong_indices):
             st.session_state.mistake_pointer = 0
             
