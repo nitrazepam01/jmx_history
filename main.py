@@ -283,39 +283,73 @@ if st.session_state.view_mode == 'grid':
 def render_quiz_ui(q_idx, is_review_mode=False, total_wrong_count=0, current_wrong_pos=0):
     q_data = questions_data[q_idx]
     
+    # 判断是否为多选
+    is_multiselect = len(q_data['answer']) > 1
+    type_label = "【多选题】" if is_multiselect else "【单选题】"
+    
+    # 顶部导航
     if st.button("⬅️ 返回主页"):
         st.session_state.view_mode = 'grid'
         st.session_state.explanation = None
         st.rerun()
 
+    # 错题模式下的徽章
     if is_review_mode:
         st.markdown(f"<div class='mistake-badge'>🔥 错题突击: 第 {current_wrong_pos + 1} / {total_wrong_count} 个</div>", unsafe_allow_html=True)
     
-    st.markdown(f"<div class='question-text'>{q_idx + 1}. {q_data['question']}</div>", unsafe_allow_html=True)
+    # 显示题目
+    st.markdown(f"<div class='question-text'>{q_idx + 1}. {type_label} {q_data['question']}</div>", unsafe_allow_html=True)
     
     options = q_data['options']
     if not options:
         st.warning("选项解析失败")
         return
 
+    # 准备单选的选项列表 (多选不需要这个 list，而是直接遍历 dict)
     option_labels = [f"{k}. {v}" for k, v in options.items()]
     
-    radio_key = f"radio_{q_idx}_review" if is_review_mode else f"radio_{q_idx}"
+    # --- 核心修改区：选项渲染逻辑 ---
+    user_choice_key = ""
     
-    selected_label = st.radio(
-        "请选择答案:",
-        option_labels,
-        index=None,
-        key=radio_key
-    )
+    if is_multiselect:
+        st.write("请勾选所有正确选项：")
+        selected_keys = []
+        
+        # 遍历选项字典，直接把 ABCD 全列出来
+        for op_key, op_val in options.items():
+            # 生成唯一的组件 Key，防止冲突
+            # 格式：cb_{题号}_{选项字母}_{模式}
+            cb_suffix = "review" if is_review_mode else "quiz"
+            cb_key = f"cb_{q_idx}_{op_key}_{cb_suffix}"
+            
+            # 渲染复选框
+            if st.checkbox(f"{op_key}. {op_val}", key=cb_key):
+                selected_keys.append(op_key)
+        
+        # 将勾选的选项排序并拼接 (例如 ["C", "A"] -> "AC")
+        if selected_keys:
+            user_choice_key = "".join(sorted(selected_keys))
+            
+    else:
+        # 单选依然使用 Radio
+        radio_key = f"radio_{q_idx}_{'review' if is_review_mode else 'quiz'}"
+        selected_label = st.radio(
+            "请选择答案:",
+            option_labels,
+            index=None,
+            key=radio_key
+        )
+        if selected_label:
+            user_choice_key = selected_label.split(".")[0]
+    
+    # ----------------------------------
     
     submit_col, next_col = st.columns([1, 1])
     
     if st.session_state.explanation is None:
         with submit_col:
             if st.button("提交答案", type="primary", use_container_width=True):
-                if selected_label:
-                    user_choice_key = selected_label.split(".")[0]
+                if user_choice_key:
                     correct_key = q_data['answer']
                     is_correct = (user_choice_key == correct_key)
                     
@@ -330,7 +364,6 @@ def render_quiz_ui(q_idx, is_review_mode=False, total_wrong_count=0, current_wro
                         if is_review_mode:
                             st.rerun() 
                         else:
-                            # 普通模式自动下一题
                             if st.session_state.current_q_index < len(questions_data) - 1:
                                 st.session_state.current_q_index += 1
                                 st.rerun()
@@ -340,17 +373,21 @@ def render_quiz_ui(q_idx, is_review_mode=False, total_wrong_count=0, current_wro
                                 st.session_state.view_mode = 'grid'
                                 st.rerun()
                     else:
-                        st.error(f"我草、用户做错了。正确答案是 {correct_key}。")
+                        st.error(f"我草、用户选错了。正确答案是 {correct_key}。")
                         with st.spinner("🤖Deepseek老师正在分析..."):
+                            # 获取 AI 解析所需的文本
+                            user_text = ', '.join([options.get(k, "未知") for k in user_choice_key])
+                            correct_text = ', '.join([options.get(k, "未知") for k in correct_key])
+                            
                             expl = get_ai_explanation(
                                 q_data['question'], 
-                                options.get(user_choice_key, "未知"), 
-                                options.get(correct_key, "未知")
+                                user_text, 
+                                correct_text
                             )
                             st.session_state.explanation = expl
                             st.rerun()
                 else:
-                    st.warning("请选择一个选项")
+                    st.warning("请至少选择一个选项")
 
     if st.session_state.explanation:
         st.info(f"**🤖 AI 解析:**\n\n{st.session_state.explanation}")
@@ -399,4 +436,3 @@ elif st.session_state.view_mode == 'review_mistakes':
             total_wrong_count=len(wrong_indices),
             current_wrong_pos=st.session_state.mistake_pointer
         )
-
